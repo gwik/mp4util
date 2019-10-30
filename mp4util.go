@@ -1,28 +1,25 @@
 package mp4util
 
 import (
-	"os"
+	"io"
 )
 
-// Returns the duration, in seconds, of the mp4 file at the provided filepath.
+// Returns the duration, in seconds, of the mp4 behind the provided reader
 // If an error occurs, the error returned is non-nil
-func Duration(filepath string) (int, error) {
-	file, _ := os.Open(filepath)
-	defer file.Close()
-
-	moovAtomPosition, _, err := findAtom(0, "moov", file)
+func Duration(r io.ReaderAt) (int, error) {
+	moovAtomPosition, _, err := findAtom(0, "moov", r)
 	if err != nil {
 		return 0, err
 	}
 
 	// start searching for the mvhd atom inside the moov atom.
 	// The first child atom of the moov atom starts 8 bytes after the start of the moov atom.
-	mvhdAtomPosition, mvhdAtomLength, err := findAtom(moovAtomPosition+8, "mvhd", file)
+	mvhdAtomPosition, mvhdAtomLength, err := findAtom(moovAtomPosition+8, "mvhd", r)
 	if err != nil {
 		return 0, err
 	}
 
-	duration, err := durationFromMvhdAtom(mvhdAtomPosition, mvhdAtomLength, file)
+	duration, err := durationFromMvhdAtom(mvhdAtomPosition, mvhdAtomLength, r)
 	if err != nil {
 		return 0, err
 	}
@@ -35,10 +32,10 @@ func Duration(filepath string) (int, error) {
 // Returns: If found the starting byte position of atom is returned along with the atom's size.
 //          If not found, -1 is returned as the starting byte position
 //          If there was an error, the error is non-nil
-func findAtom(startPos int64, atomName string, file *os.File) (int64, int64, error) {
+func findAtom(startPos int64, atomName string, r io.ReaderAt) (int64, int64, error) {
 	buffer := make([]byte, 8)
 	for true {
-		_, err := file.ReadAt(buffer, startPos)
+		_, err := r.ReadAt(buffer, startPos)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -61,9 +58,9 @@ func findAtom(startPos int64, atomName string, file *os.File) (int64, int64, err
 
 // Returns the duration in seconds as given by the data in the mvhd atom starting at mvhdStart
 // Returns non-nill error is there is an error.
-func durationFromMvhdAtom(mvhdStart int64, mvhdLength int64, file *os.File) (int, error) {
+func durationFromMvhdAtom(mvhdStart int64, mvhdLength int64, r io.ReaderAt) (int, error) {
 	buffer := make([]byte, 8)
-	_, err := file.ReadAt(buffer, mvhdStart+20) // The timescale field starts at the 21st byte of the mvhd atom
+	_, err := r.ReadAt(buffer, mvhdStart+20) // The timescale field starts at the 21st byte of the mvhd atom
 	if err != nil {
 		return 0, err
 	}
