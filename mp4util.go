@@ -1,28 +1,33 @@
 package mp4util
 
 import (
-	"os"
+	"bytes"
+	"io"
+	"io/ioutil"
+)
+
+var (
+	moov = []byte("moov")
+	mvhd = []byte("mvhd")
 )
 
 // Returns the duration, in seconds, of the mp4 file at the provided filepath.
-// If an error occurs, the error returned is non-nil
-func Duration(filepath string) (int, error) {
-	file, _ := os.Open(filepath)
-	defer file.Close()
+// If an error occurs, the error returned is non-nil.
+func Duration(r io.Reader) (int, error) {
 
-	moovAtomPosition, _, err := findAtom(0, "moov", file)
-	if err != nil {
+	// validate that we have a moov atom ?
+	if _, err := findNextAtom(r, moov); err != nil {
 		return 0, err
 	}
 
 	// start searching for the mvhd atom inside the moov atom.
 	// The first child atom of the moov atom starts 8 bytes after the start of the moov atom.
-	mvhdAtomPosition, mvhdAtomLength, err := findAtom(moovAtomPosition+8, "mvhd", file)
+	mvhdAtomLength, err := findNextAtom(r, mvhd)
 	if err != nil {
 		return 0, err
 	}
 
-	duration, err := durationFromMvhdAtom(mvhdAtomPosition, mvhdAtomLength, file)
+	duration, err := durationFromMvhdAtom(r, mvhdAtomLength)
 	if err != nil {
 		return 0, err
 	}
@@ -30,17 +35,18 @@ func Duration(filepath string) (int, error) {
 	return duration, nil
 }
 
-// Finds the starting position of the atom of the given name if it is a direct child of the atom
-// that is indicated by the given start position.
-// Returns: If found the starting byte position of atom is returned along with the atom's size.
-//          If not found, -1 is returned as the starting byte position
-//          If there was an error, the error is non-nil
-func findAtom(startPos int64, atomName string, file *os.File) (int64, int64, error) {
+func skipN(r io.Reader, n int64) error {
+	_, err := io.CopyN(ioutil.Discard, r, n)
+	return err
+}
+
+// Finds the starting position of the atom of the given name.
+func findNextAtom(r io.Reader, atomName []byte) (int64, error) {
 	buffer := make([]byte, 8)
-	for true {
-		_, err := file.ReadAt(buffer, startPos)
+	for {
+		_, err := io.ReadFull(r, buffer)
 		if err != nil {
-			return 0, 0, err
+			return 0, err
 		}
 
 		// The structure of an mp4 atom is:
@@ -48,23 +54,26 @@ func findAtom(startPos int64, atomName string, file *os.File) (int64, int64, err
 		// 4 bytes - name of atom in ascii encoding
 		// rest    - atom data
 		lengthOfAtom := int64(convertBytesToInt(buffer[0:4]))
-		name := string(buffer[4:])
-		if name == atomName {
-			return startPos, lengthOfAtom, nil
+		if bytes.Equal(atomName, buffer[4:]) {
+			return lengthOfAtom, nil
 		}
-
-		// move to next atom's starting position
-		startPos += lengthOfAtom
+		if err := skipN(r, lengthOfAtom); err != nil {
+			return 0, err
+		}
 	}
-	return -1, 0, nil
+	return 0, io.ErrUnexpectedEOF
 }
 
 // Returns the duration in seconds as given by the data in the mvhd atom starting at mvhdStart
 // Returns non-nill error is there is an error.
-func durationFromMvhdAtom(mvhdStart int64, mvhdLength int64, file *os.File) (int, error) {
+func durationFromMvhdAtom(r io.Reader, mvhdLength int64) (int, error) {
+	// The timescale field starts at the 21st byte of the mvhd atom
+	if err := skipN(r, 20); err != nil {
+		return 0, err
+	}
+
 	buffer := make([]byte, 8)
-	_, err := file.ReadAt(buffer, mvhdStart+20) // The timescale field starts at the 21st byte of the mvhd atom
-	if err != nil {
+	if _, err := io.ReadFull(r, buffer); err != nil {
 		return 0, err
 	}
 
