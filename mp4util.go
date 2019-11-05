@@ -31,7 +31,11 @@ func Duration(r io.Reader) (time.Duration, error) {
 		return 0, err
 	}
 
-	return durationFromMvhdAtom(r, int64(mvhdAtomLength))
+	if mvhdAtomLength < 0 {
+		return 0, io.ErrUnexpectedEOF
+	}
+
+	return durationFromMvhdAtom(r, mvhdAtomLength)
 }
 
 func skipN(r io.Reader, n int64) error {
