@@ -6,9 +6,11 @@ import (
 	"io/ioutil"
 )
 
+type atom [4]byte
+
 var (
-	moov = []byte("moov")
-	mvhd = []byte("mvhd")
+	moov = atom{'m', 'o', 'o', 'v'}
+	mvhd = atom{'m', 'v', 'h', 'd'}
 )
 
 // Returns the duration, in seconds, of the mp4 file at the provided filepath.
@@ -41,7 +43,7 @@ func skipN(r io.Reader, n int64) error {
 }
 
 // Finds the starting position of the atom of the given name.
-func findNextAtom(r io.Reader, atomName []byte) (int64, error) {
+func findNextAtom(r io.Reader, atomName atom) (int64, error) {
 	buffer := make([]byte, 8)
 	for {
 		_, err := io.ReadFull(r, buffer)
@@ -54,7 +56,7 @@ func findNextAtom(r io.Reader, atomName []byte) (int64, error) {
 		// 4 bytes - name of atom in ascii encoding
 		// rest    - atom data
 		lengthOfAtom := int64(convertBytesToInt(buffer[0:4]))
-		if bytes.Equal(atomName, buffer[4:]) {
+		if bytes.Equal(atomName[:], buffer[4:]) {
 			return lengthOfAtom, nil
 		}
 		if err := skipN(r, lengthOfAtom); err != nil {
