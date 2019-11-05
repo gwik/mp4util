@@ -2,8 +2,10 @@ package mp4util
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 	"io/ioutil"
+	"time"
 )
 
 type atom [4]byte
@@ -15,9 +17,9 @@ var (
 
 // Returns the duration, in seconds, of the mp4 file at the provided filepath.
 // If an error occurs, the error returned is non-nil.
-func Duration(r io.Reader) (int, error) {
+func Duration(r io.Reader) (time.Duration, error) {
 
-	// validate that we have a moov atom ?
+	// find the moov atom which is a container for the mvhd atom.
 	if _, err := findNextAtom(r, moov); err != nil {
 		return 0, err
 	}
@@ -29,12 +31,7 @@ func Duration(r io.Reader) (int, error) {
 		return 0, err
 	}
 
-	duration, err := durationFromMvhdAtom(r, mvhdAtomLength)
-	if err != nil {
-		return 0, err
-	}
-
-	return duration, nil
+	return durationFromMvhdAtom(r, int64(mvhdAtomLength))
 }
 
 func skipN(r io.Reader, n int64) error {
@@ -42,11 +39,13 @@ func skipN(r io.Reader, n int64) error {
 	return err
 }
 
-// Finds the starting position of the atom of the given name.
+// Finds the starting position of the atom of the given name and return the
+// size of the atom.
+// -1 size with no error means that atom data continues is until EOF.
 func findNextAtom(r io.Reader, atomName atom) (int64, error) {
 	buffer := make([]byte, 8)
 	for {
-		_, err := io.ReadFull(r, buffer)
+		n, err := io.ReadFull(r, buffer)
 		if err != nil {
 			return 0, err
 		}
@@ -55,11 +54,35 @@ func findNextAtom(r io.Reader, atomName atom) (int64, error) {
 		// 4 bytes - length of atom
 		// 4 bytes - name of atom in ascii encoding
 		// rest    - atom data
-		lengthOfAtom := int64(convertBytesToInt(buffer[0:4]))
-		if bytes.Equal(atomName[:], buffer[4:]) {
-			return lengthOfAtom, nil
+		atomSize := binary.BigEndian.Uint32(buffer[0:4])
+		var realSize int64
+
+		switch atomSize {
+		case 0x0:
+			if bytes.Equal(atomName[:], buffer[4:]) {
+				// atom continues until EOF
+				return -1, nil
+			} else {
+				// atom continues until EOF but it's not the one we are looking
+				// for.
+				return 0, io.ErrUnexpectedEOF
+			}
+		case 0x1: // extended (64 bit) size
+			sizebuf := make([]byte, 8)
+			_, err := io.ReadFull(r, sizebuf)
+			if err != nil {
+				return 0, err
+			}
+			n += 8
+			realSize = int64(binary.BigEndian.Uint64(sizebuf))
+		default:
+			realSize = int64(atomSize)
 		}
-		if err := skipN(r, lengthOfAtom); err != nil {
+
+		if bytes.Equal(atomName[:], buffer[4:]) {
+			return realSize, nil
+		}
+		if err := skipN(r, realSize-int64(n)); err != nil {
 			return 0, err
 		}
 	}
@@ -68,7 +91,7 @@ func findNextAtom(r io.Reader, atomName atom) (int64, error) {
 
 // Returns the duration in seconds as given by the data in the mvhd atom starting at mvhdStart
 // Returns non-nill error is there is an error.
-func durationFromMvhdAtom(r io.Reader, mvhdLength int64) (int, error) {
+func durationFromMvhdAtom(r io.Reader, mvhdLength int64) (time.Duration, error) {
 	// The timescale field starts at the 21st byte of the mvhd atom
 	if err := skipN(r, 20); err != nil {
 		return 0, err
@@ -81,17 +104,10 @@ func durationFromMvhdAtom(r io.Reader, mvhdLength int64) (int, error) {
 
 	// The timescale is bytes 21-24.
 	// The duration is bytes 25-28
-	timescale := convertBytesToInt(buffer[0:4]) // This is in number of units per second
-	durationInTimeScale := convertBytesToInt(buffer[4:])
-	return int(durationInTimeScale) / int(timescale), nil
-}
-
-func convertBytesToInt(buf []byte) int {
-	res := 0
-	for i := len(buf) - 1; i >= 0; i-- {
-		b := int(buf[i])
-		shift := uint((len(buf) - 1 - i) * 8)
-		res += b << shift
+	timescale := binary.BigEndian.Uint32(buffer[0:4]) // This is in number of units per second
+	if timescale == 0 {
+		timescale = 600
 	}
-	return res
+	durationInTimeScale := binary.BigEndian.Uint32(buffer[4:])
+	return time.Duration(durationInTimeScale) * time.Second / time.Duration(timescale), nil
 }
